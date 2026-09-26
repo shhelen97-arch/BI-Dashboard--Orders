@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>בדיקות — תמונת מצב הזמנות</title>
+  <link rel="stylesheet" href="../styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="../app.js"></script>
+  <style>
+    .pass { color: var(--success); font-weight: 700; }
+    .fail { color: var(--danger); font-weight: 700; }
+    #result { font-size: 20px; font-weight: 800; margin-block-end: var(--space-4); }
+    code { direction: ltr; unicode-bidi: embed; font-size: 12px; color: var(--muted); }
+  </style>
+</head>
+<body>
+<main class="container">
+  <div class="card">
+    <h2>בדיקות אוטומטיות — parseDate · detectColumns · שורת כותרת · aggregate · insights</h2>
+    <div id="result">מריץ…</div>
+    <table class="table"><thead><tr><th>#</th><th>בדיקה</th><th>תוצאה</th><th>פירוט</th></tr></thead><tbody id="rows"></tbody></table>
+  </div>
+</main>
+<script>
+(function () {
+  const results = [];
+  function test(name, fn) {
+    try {
+      const r = fn();
+      if (r === true) results.push({ name, ok: true, detail: '' });
+      else results.push({ name, ok: false, detail: typeof r === 'string' ? r : JSON.stringify(r) });
+    } catch (e) { results.push({ name, ok: false, detail: 'Exception: ' + e.message }); }
+  }
+  const ymd = d => d ? `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}` : 'null';
+  const hm = d => d ? `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}` : 'null';
+  const eq = (got, exp) => got === exp ? true : `expected ${exp}, got ${got}`;
+
+  /* ---------- parseDate ---------- */
+  test('Excel serial 46023 → 2026-01-01', () => eq(ymd(parseDate(46023)), '2026-01-01'));
+  test('Excel serial 46082 → 2026-03-01', () => eq(ymd(parseDate(46082)), '2026-03-01'));
+  test('Excel serial 46204.75 → 2026-07-01 18:00', () => { const d = parseDate(46204.75); return eq(ymd(d) + ' ' + hm(d), '2026-07-01 18:00'); });
+  test('Excel serial 1 → 1900-01-01', () => eq(ymd(parseDate(1)), '1900-01-01'));
+  test('Excel serial 61 → 1900-03-01 (1900 leap-year bug)', () => eq(ymd(parseDate(61)), '1900-03-01'));
+  test('Excel serial as text "46023" → 2026-01-01', () => eq(ymd(parseDate('46023')), '2026-01-01'));
+  test('Date object passes through', () => eq(ymd(parseDate(new Date(2026, 4, 17))), '2026-05-17'));
+  test('Invalid Date → null', () => eq(parseDate(new Date('x')), null));
+  test('ISO "2026-02-14" → 2026-02-14', () => eq(ymd(parseDate('2026-02-14')), '2026-02-14'));
+  test('ISO with time "2026-02-14T09:30:00"', () => { const d = parseDate('2026-02-14T09:30:00'); return eq(ymd(d) + ' ' + hm(d), '2026-02-14 09:30'); });
+  test('dd/mm/yyyy "03/04/2026" → 3 April (day first)', () => eq(ymd(parseDate('03/04/2026')), '2026-04-03'));
+  test('dd/mm/yyyy "31/01/2026"', () => eq(ymd(parseDate('31/01/2026')), '2026-01-31'));
+  test('dd.mm.yyyy "15.06.2026"', () => eq(ymd(parseDate('15.06.2026')), '2026-06-15'));
+  test('dd-mm-yyyy "15-06-2026"', () => eq(ymd(parseDate('15-06-2026')), '2026-06-15'));
+  test('dd/mm/yy "5/6/26" → 2026-06-05', () => eq(ymd(parseDate('5/6/26')), '2026-06-05'));
+  test('dd/mm/yyyy with time "01/07/2026 14:05"', () => { const d = parseDate('01/07/2026 14:05'); return eq(ymd(d) + ' ' + hm(d), '2026-07-01 14:05'); });
+  test('Impossible date "31/02/2026" → null', () => eq(parseDate('31/02/2026'), null));
+  test('Month 13 "01/13/2026" → null', () => eq(parseDate('01/13/2026'), null));
+  test('Text "abc" / empty → null', () => eq(parseDate('abc') === null && parseDate('') === null && parseDate(null) === null, true));
+
+  /* ---------- parseTime ---------- */
+  test('parseTime "9:05" → 09:05', () => eq(parseTime('9:05'), '09:05'));
+  test('parseTime Excel fraction 0.75 → 18:00', () => eq(parseTime(0.75), '18:00'));
+
+  /* ---------- normalizeHeader ---------- */
+  test('normalizeHeader " Ship_To-City " → shiptocity', () => eq(normalizeHeader(' Ship_To-City '), 'shiptocity'));
+  test('normalizeHeader "מס\' הזמנה" → מסהזמנה', () => eq(normalizeHeader("מס' הזמנה"), 'מסהזמנה'));
+
+  /* ---------- detectColumns: real export ---------- */
+  const realHeaders = ['Client Code', 'Order Number', 'Ship To', 'Ship Date', 'Ship Time', 'Carrier', 'Total Lines',
+    'Total Packages', 'Total Eaches', 'Ship To City', 'Carrier Mode', 'Order Status'];
+  const realSample = Array.from({ length: 30 }, (_, i) => [
+    'C' + (i % 7), 'SO' + (1000 + i), 'Fake Person ' + i, 46023 + i, 0.4 + i / 100, ['CARGO', 'BUZZ', 'KATZ'][i % 3],
+    1 + i % 4, 1, 2 + i % 5, ['חיפה', 'תל אביב', 'ירושלים'][i % 3], i % 3 ? 'ND' : 'LOCKER', 'DVS_DELIVERED']);
+  const expectReal = { client: 'Client Code', orderId: 'Order Number', shipDate: 'Ship Date', shipTime: 'Ship Time',
+    carrier: 'Carrier', lines: 'Total Lines', packages: 'Total Packages', units: 'Total Eaches', city: 'Ship To City',
+    shipType: 'Carrier Mode', status: 'Order Status' };
+  test('Real export: all 11 fields mapped with HIGH confidence', () => {
+    const det = detectColumns(realHeaders, realSample);
+    const bad = Object.entries(expectReal).filter(([k, col]) => !det[k] || det[k].column !== col || det[k].confidence !== 'high');
+    return bad.length === 0 && Object.keys(det).length === 11 ? true : { bad, det };
+  });
+  test('Real export: "Ship To" is never assigned', () => {
+    const det = detectColumns(realHeaders, realSample);
+    return Object.values(det).every(v => v.column !== 'Ship To') ? true : det;
+  });
+  test('Real export: needsMappingAttention = false', () => eq(needsMappingAttention(detectColumns(realHeaders, realSample)), false));
+
+  /* ---------- detectColumns: renamed headers ---------- */
+  const heHeaders = ['לקוח', 'מספר הזמנה', 'נמען', 'Date', 'שעה', 'מוביל', 'Qty Lines', 'Packages', 'יחידות', 'עיר', 'סוג משלוח', 'Status'];
+  const heSample = realSample.map(r => [r[0], r[1], r[2], '0' + (1 + r[3] % 9) + '/05/2026', '10:15', r[5], r[6], r[7], r[8], r[9], r[10], r[11]]);
+  test('Renamed (Hebrew / alt-English) headers: all 11 fields mapped', () => {
+    const det = detectColumns(heHeaders, heSample);
+    const exp = { client: 'לקוח', orderId: 'מספר הזמנה', shipDate: 'Date', shipTime: 'שעה', carrier: 'מוביל', lines: 'Qty Lines',
+      packages: 'Packages', units: 'יחידות', city: 'עיר', shipType: 'סוג משלוח', status: 'Status' };
+    const bad = Object.entries(exp).filter(([k, col]) => !det[k] || det[k].column !== col);
+    return bad.length === 0 ? true : { bad, det };
+  });
+  test('Renamed: "נמען" (recipient) is never assigned', () =>
+    Object.values(detectColumns(heHeaders, heSample)).every(v => v.column !== 'נמען'));
+
+  /* ---------- detectColumns: rules ---------- */
+  test('Missing carrier column → carrier absent → mapping panel opens', () => {
+    const h = heHeaders.filter(x => x !== 'מוביל');
+    const s = heSample.map(r => r.filter((_, i) => i !== 5));
+    const det = detectColumns(h, s);
+    return !det.carrier && needsMappingAttention(det) ? true : det;
+  });
+  test('Never assigns the same column to two fields', () => {
+    const det = detectColumns(['Order', 'Order Date', 'Order Status', 'Carrier Carrier'], []);
+    const cols = Object.values(det).map(v => v.column);
+    return new Set(cols).size === cols.length ? true : det;
+  });
+  test('Partial synonym → MEDIUM ("Shipping Carrier Name")', () => {
+    const det = detectColumns(['Shipping Carrier Name'], []);
+    return det.carrier && det.carrier.confidence === 'medium' ? true : det;
+  });
+  test('Value-only fallback → LOW (unnamed date column)', () => {
+    const det = detectColumns(['X1', 'X2'], Array.from({ length: 10 }, (_, i) => ['ABC' + i, 46023 + i]));
+    return det.shipDate && det.shipDate.column === 'X2' && det.shipDate.confidence === 'low' ? true : det;
+  });
+  test('Low-confidence required field → mapping panel opens', () => {
+    const det = { orderId: { column: 'a', confidence: 'high' }, shipDate: { column: 'b', confidence: 'low' },
+      carrier: { column: 'c', confidence: 'high' }, client: { column: 'd', confidence: 'high' } };
+    return eq(needsMappingAttention(det), true);
+  });
+
+  /* ---------- header row ---------- */
+  test('Header row found below 2 title rows + blank row', () => {
+    const aoa = [['דוח משלוחים — Shipped Orders'], ['הופק: 01/07/2026'], [], realHeaders, realSample[0], realSample[1]];
+    return eq(findHeaderRow(aoa), 3);
+  });
+  test('Header row at top when no titles', () => eq(findHeaderRow([realHeaders, realSample[0], realSample[1]]), 0));
+
+  /* ---------- normalize + privacy ---------- */
+  test('Canonical rows contain no recipient name', () => {
+    const idx = h => realHeaders.indexOf(h);
+    const mapping = {}; Object.entries(expectReal).forEach(([k, c]) => mapping[k] = idx(c));
+    const out = normalizeRows(realSample, mapping);
+    const json = JSON.stringify(out.rows);
+    return out.rows.length === 30 && !json.includes('Fake Person') ? true : 'recipient leaked or rows missing';
+  });
+
+
+  /* =================== Phase 2 =================== */
+  function mk(orderId, day, carrier, client, shipType, status, lines, units) {
+    const [y, m, d] = day.split('-').map(Number);
+    return { orderId, shipDate: new Date(y, m - 1, d), ym: day.slice(0, 7), day, carrier, client,
+             shipType, status, city: '', lines, packages: 1, units, shipTime: null };
+  }
+  const FIX = [
+    mk('O1', '2026-06-01', 'CARGO', 'C1', 'ND', 'DVS_DELIVERED', 2, 5),
+    mk('O2', '2026-06-01', 'CARGO', 'C1', 'LOCKER', 'DVS_DELIVERED', 1, 1),
+    mk('O3', '2026-06-02', 'BUZZ', 'C2', 'ND', 'SHIPPED', 3, 4),
+    mk('O4', '2026-06-02', 'BUZZ', 'C2', 'ND', 'DVS_DELIVERED', 1, 2),
+    mk('O5', '2026-06-02', 'KATZ', 'C3', 'LOCKER', 'DVS_PICKEDUP', 2, 2),
+    mk('O6', '2026-06-03', 'CARGO', 'C1', 'ND', 'DVS_DELIVERED', 4, 10),
+    mk('O7', '2026-06-05', 'CARGO', 'C4', 'ND', 'DVS_DELIVERED', 1, 1),
+    mk('O8', '2026-06-05', 'KATZ', 'C1', 'LOCKER', 'RETURN W', 2, 3),
+    mk('O8', '2026-06-05', 'KATZ', 'C1', 'LOCKER', 'RETURN W', 1, 2),   // same order, 2nd row
+    mk('O9', '2026-06-05', 'CARGO', 'C5', 'ND', 'DVS_DELIVERED', 3, 6),
+    mk('X1', '2026-07-01', 'CARGO', 'C9', 'ND', 'DVS_DELIVERED', 1, 1), // other month
+  ];
+  const JUNE = filterByMonth(FIX, '2026-06');
+  const M = aggregate(JUNE, '2026-06');
+  test('filterByMonth keeps only the selected month', () => eq(JUNE.length + '/' + filterByMonth(FIX, '2026-07').length, '10/1'));
+  test('aggregate: orders = distinct order numbers (9)', () => eq(M.orders, 9));
+  test('aggregate: units summed over all rows (36)', () => eq(M.units, 36));
+  test('aggregate: avg lines per order 20/9 = 2.22', () => eq(M.avgLinesPerOrder.toFixed(2), '2.22'));
+  test('aggregate: active clients 5, active days 4', () => eq(M.activeClients + '/' + M.activeDays, '5/4'));
+  test('aggregate: locker share 3/9 = 33.3%', () => eq((M.lockerShare * 100).toFixed(1), '33.3'));
+  test('aggregate: carrier leader CARGO with 5', () => eq(M.carriers.leader.name + ':' + M.carriers.leader.orders, 'CARGO:5'));
+  test('aggregate: top-2 clients share 6/9', () => eq(M.topClients.top2Share.toFixed(4), (6 / 9).toFixed(4)));
+  test('aggregate: daily series covers all 30 days of June; peak 02/06 with 3', () =>
+    eq(M.daily.days.length + ' ' + M.daily.peak.date + ':' + M.daily.peak.orders, '30 2026-06-02:3'));
+  test('aggregate: exceptions 3, top carrier KATZ with 2', () =>
+    eq(M.exceptions.total + ' ' + M.exceptions.topCarrier.name + ':' + M.exceptions.topCarrier.orders, '3 KATZ:2'));
+  test('aggregate: exceptions grouped status × carrier', () =>
+    eq(M.exceptions.rows.map(r => `${r.status}|${r.carrier}|${r.orders}`).sort().join(','),
+       'DVS_PICKEDUP|KATZ|1,RETURN W|KATZ|1,SHIPPED|BUZZ|1'));
+  test('aggregate does not touch the DOM (works on plain objects only)', () => eq(typeof aggregate([], null).orders, 'number'));
+
+  test('Partial month: July ending on the 28th → partial', () => eq(isPartialMonth(2026, 6, 1, 28), true));
+  test('Partial month: June 1–30 → complete', () => eq(isPartialMonth(2026, 5, 1, 30), false));
+  test('Partial month: first date on day 4 → partial', () => eq(isPartialMonth(2026, 5, 4, 30), true));
+  test('Partial month: Feb 2–26 (2 days before end allowed) → complete', () => eq(isPartialMonth(2026, 1, 2, 26), false));
+  test('Default month = latest complete (June, not partial July)', () => {
+    const rows = [mk('a', '2026-06-01', 'A', 'c', '', '', 1, 1), mk('b', '2026-06-30', 'A', 'c', '', '', 1, 1),
+                  mk('c', '2026-07-01', 'A', 'c', '', '', 1, 1), mk('d', '2026-07-28', 'A', 'c', '', '', 1, 1)];
+    const ms = monthStats(rows);
+    return eq(pickDefaultMonth(ms) + ' ' + ms.map(x => x.partial).join(','), '2026-06 false,true');
+  });
+  test('Default month when all months are partial = latest', () =>
+    eq(pickDefaultMonth([{ ym: '2026-01', partial: true }, { ym: '2026-02', partial: true }]), '2026-02'));
+
+  test('"אחר" grouping: carriers under 1% folded, members listed', () => {
+    const rows = [];
+    const add = (c, n) => { for (let i = 0; i < n; i++) rows.push(mk(c + i, '2026-06-01', c, 'x', '', '', 1, 1)); };
+    add('A', 150); add('B', 48); add('C', 1); add('D', 1);
+    const m = aggregate(rows);
+    return eq(m.carriers.items.map(c => c.name).join(',') + ' | other ' + m.carriers.other.orders + ' ' +
+      m.carriers.other.members.map(c => c.name).sort().join(','), 'A,B | other 2 C,D');
+  });
+  test('"אחר" is null when all carriers ≥ 1%', () => eq(M.carriers.other, null));
+  test('Ship type labels: ND / LOCKER in Hebrew, unknown as-is', () =>
+    eq([shipTypeLabel('ND'), shipTypeLabel('LOCKER'), shipTypeLabel('XPRESS')].join('|'), 'משלוח עד הבית|לוקר|XPRESS'));
+
+  test('Insights: 3–5 items, each with a tone', () => {
+    const ins = buildInsights(M);
+    return ins.length >= 3 && ins.length <= 5 && ins.every(i => ['info', 'warn', 'good'].includes(i.tone) && i.text) ? true : ins;
+  });
+  test('Insights: exceptions warn when one carrier has > 50% (even if rate < 1%)', () => {
+    const m = JSON.parse(JSON.stringify(M));
+    m.exceptions = { total: 37, rate: 0.0028, topCarrier: { name: 'KATZ', orders: 30, share: 30 / 37 } };
+    const e = buildInsights(m).find(i => i.text.includes('נמסר'));
+    return e && e.tone === 'warn' && e.text.includes('30 מתוך 37') ? true : e;
+  });
+  test('Insights: exceptions info when rate < 1% and spread out', () => {
+    const m = JSON.parse(JSON.stringify(M));
+    m.exceptions = { total: 10, rate: 0.005, topCarrier: { name: 'KATZ', orders: 4, share: 0.4 } };
+    const e = buildInsights(m).find(i => i.text.includes('נמסר'));
+    return e && e.tone === 'info' ? true : e;
+  });
+  test('Insights: numbers come from metrics (peak & ratio)', () => {
+    const t = buildInsights(M).find(i => i.text.startsWith('יום השיא'));
+    return t && t.text.includes('02/06') && t.text.includes('פי 1.3') ? true : t;   // 3 / (9/4) = 1.33
+  });
+
+  /* missing-required.csv, mapped with required fields only (carrier chosen manually) */
+  const MISSING_CSV = "לקוח,מספר הזמנה,נמען,Date,שעה,Qty Lines,Packages,יחידות,עיר,סוג משלוח,Status\nC100,SO-900100,יוסי בדיון (בדיקה 1),03/05/2026,17:03,3,1,8,עפולה,ND,DVS_RETURNED\nC101,SO-900101,מיכל ישראלי (בדיקה 2),05/05/2026,08:27,5,1,8,חיפה,LOCKER,DVS_DELIVERED\nC102,SO-900102,ישראל פיקטיבי (בדיקה 3),07/05/2026,08:14,4,1,10,תל אביב,ND,DVS_DELIVERED\nC103,SO-900103,עומר כהן-בדיקה (בדיקה 4),11/05/2026,11:26,1,1,5,הרצליה,LOCKER,DVS_DELIVERED\nC104,SO-900104,דנה פיקטיבי (בדיקה 5),14/05/2026,16:40,2,2,3,הרצליה,LOCKER,DVS_DELIVERED\nC105,SO-900105,טל ישראלי (בדיקה 6),18/05/2026,16:13,1,2,6,פתח תקווה,LOCKER,DVS_DELIVERED\nC100,SO-900106,נועה לוי-דמו (בדיקה 7),21/05/2026,10:50,4,1,5,עפולה,ND,DVS_DELIVERED\nC101,SO-900107,שירה לוי-דמו (בדיקה 8),25/05/2026,18:28,5,1,6,הרצליה,ND,DVS_DELIVERED\nC102,SO-900108,נועה כהן-בדיקה (בדיקה 9),27/05/2026,21:31,2,1,3,הרצליה,LOCKER,DVS_DELIVERED\nC103,SO-900109,נועה לוי-דמו (בדיקה 10),31/05/2026,16:31,3,2,4,חיפה,ND,DVS_RETURNED\nC104,SO-900110,דנה ישראלי (בדיקה 11),01/06/2026,18:44,4,2,8,ראשון לציון,LOCKER,DVS_DELIVERED\nC105,SO-900111,ישראל בדיון (בדיקה 12),02/06/2026,12:10,3,1,10,תל אביב,ND,DVS_DELIVERED\nC100,SO-900112,יוסי כהן-בדיקה (בדיקה 13),04/06/2026,13:25,3,1,5,פתח תקווה,ND,DVS_DELIVERED\nC101,SO-900113,אבי כהן-בדיקה (בדיקה 14),08/06/2026,20:27,5,2,11,אשדוד,LOCKER,DVS_DELIVERED\nC102,SO-900114,מיכל כהן-בדיקה (בדיקה 15),10/06/2026,08:11,4,1,7,תל אביב,ND,DVS_DELIVERED\nC103,SO-900115,יוסי לוי-דמו (בדיקה 16),15/06/2026,11:00,5,2,13,אשדוד,LOCKER,DVS_DELIVERED\nC104,SO-900116,נועה כהן-בדיקה (בדיקה 17),17/06/2026,18:54,5,1,12,הרצליה,ND,DVS_DELIVERED\nC105,SO-900117,רון בדיון (בדיקה 18),22/06/2026,08:30,4,1,7,חיפה,ND,DVS_DELIVERED\nC100,SO-900118,יוסי ישראלי (בדיקה 19),24/06/2026,12:38,4,1,4,עפולה,ND,DVS_RETURNED\nC101,SO-900119,דנה לוי-דמו (בדיקה 20),30/06/2026,16:01,5,1,11,ירושלים,LOCKER,DVS_DELIVERED";
+  test('missing-required.csv: aggregate + insights work with optional fields missing', () => {
+    const lines = MISSING_CSV.split(/\r?\n/).map(l => l.split(','));
+    const h = lines[0], data = lines.slice(1);
+    const mapping = { orderId: h.indexOf('מספר הזמנה'), shipDate: h.indexOf('Date'), client: h.indexOf('לקוח'),
+                      carrier: h.indexOf('סוג משלוח') };               // manual pick; everything optional unmapped
+    const canon = normalizeRows(data, mapping).rows;
+    const months = monthStats(canon);
+    const m = aggregate(filterByMonth(canon, pickDefaultMonth(months)), pickDefaultMonth(months));
+    const ins = buildInsights(m);
+    const nulls = [m.units, m.lines, m.avgLinesPerOrder, m.lockerShare, m.shipTypes, m.exceptions].every(v => v === null);
+    const noRecipient = !JSON.stringify(canon).includes('בדיקה');
+    return nulls && ins.length >= 3 && noRecipient ? true : { nulls, ins, noRecipient };
+  });
+
+  /* ---------- SheetJS drift (only when the library is loaded) ---------- */
+  if (typeof XLSX !== 'undefined') {
+    test('SheetJS Excel date → correct day after drift correction (01/03/2026)', () => {
+      const ws = XLSX.utils.aoa_to_sheet([['d'], [46082]]); ws.A2.z = 'dd/mm/yyyy';
+      const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 's');
+      const back = XLSX.read(XLSX.write(wb, { type: 'array', bookType: 'xlsx' }), { type: 'array', cellDates: true });
+      const raw = XLSX.utils.sheet_to_json(back.Sheets.s, { header: 1, raw: true })[1][0];
+      const fixed = correctSheetDate(raw);
+      return eq(ymd(fixed) + ' ' + hm(fixed), '2026-03-01 00:00');
+    });
+  } else {
+    results.push({ name: 'SheetJS drift test', ok: true, detail: 'דולג — SheetJS לא נטען (אין אינטרנט)' });
+  }
+
+  /* ---------- render ---------- */
+  const passed = results.filter(r => r.ok).length;
+  const res = document.getElementById('result');
+  res.textContent = `${passed} / ${results.length} עברו` + (passed === results.length ? ' ✓' : ' ✗');
+  res.className = passed === results.length ? 'pass' : 'fail';
+  document.getElementById('rows').replaceChildren(...results.map((r, i) => {
+    const tr = document.createElement('tr');
+    tr.innerHTML = `<td>${i + 1}</td><td></td><td class="${r.ok ? 'pass' : 'fail'}">${r.ok ? '✓' : '✗'}</td><td><code></code></td>`;
+    tr.children[1].textContent = r.name;
+    tr.children[3].firstChild.textContent = r.detail;
+    return tr;
+  }));
+  window.__testResults = { passed, total: results.length, failed: results.filter(r => !r.ok) };
+})();
+</script>
+</body>
+</html>

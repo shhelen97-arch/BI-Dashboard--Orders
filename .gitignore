@@ -1,0 +1,6 @@
+# Real company data must never be committed
+Shipped_Orders*.xlsx
+*.xlsx
+!test-data/*.xlsx
+.DS_Store
+Thumbs.db

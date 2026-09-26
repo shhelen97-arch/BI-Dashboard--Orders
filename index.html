@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="he" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>תמונת מצב הזמנות</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Heebo:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+  <!-- Libraries: the only network calls on this page. Your data is never sent anywhere. -->
+  <script defer src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="container header-inner">
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 8l-9-5-9 5v8l9 5 9-5z"/><path d="M3 8l9 5 9-5"/><path d="M12 13v8"/></svg>
+        </span>
+        <div>
+          <h1>תמונת מצב הזמנות</h1>
+          <p class="subtitle">הקובץ נשאר במחשב שלך — שום נתון לא נשלח לשום מקום</p>
+        </div>
+      </div>
+      <button type="button" id="resetBtn" class="btn btn-ghost" hidden>החלף קובץ</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Error box -->
+    <div id="errorBox" class="alert alert-error" role="alert" hidden>
+      <div class="alert-body">
+        <strong id="errorTitle"></strong>
+        <p id="errorText"></p>
+      </div>
+      <button type="button" class="alert-close" id="errorClose" aria-label="סגור">×</button>
+    </div>
+
+    <!-- Drop zone -->
+    <section id="dropZone" class="drop-zone" tabindex="0" role="button"
+             aria-label="גררו לכאן קובץ הזמנות או לחצו לבחירת קובץ">
+      <div class="drop-icon" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="48" height="48" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M12 18v-6"/><path d="M9 15l3-3 3 3"/></svg>
+      </div>
+      <p class="drop-title">גררו לכאן את קובץ ההזמנות</p>
+      <p class="drop-or">או</p>
+      <button type="button" id="pickBtn" class="btn btn-primary">בחר קובץ</button>
+      <p class="drop-hint">Excel ‏(‎.xlsx / .xls‎) או CSV — ייצוא "Shipped Orders" מה-WMS</p>
+      <input type="file" id="fileInput" accept=".xlsx,.xls,.csv" hidden>
+    </section>
+
+    <!-- Loading -->
+    <div id="loading" class="loading" hidden>
+      <span class="spinner" aria-hidden="true"></span>
+      <span id="loadingText">קורא את הקובץ…</span>
+    </div>
+
+    <!-- File info -->
+    <div id="fileInfo" class="file-info" hidden></div>
+
+    <!-- Mapping panel -->
+    <section id="mappingSection" class="card" hidden>
+      <details id="mappingDetails">
+        <summary id="mappingSummary"></summary>
+        <div class="mapping-body">
+          <p id="mappingIntro" class="muted"></p>
+          <div id="mappingGrid" class="mapping-grid"></div>
+          <p id="mappingError" class="inline-error" hidden></p>
+          <div class="mapping-actions">
+            <button type="button" id="mappingContinue" class="btn btn-primary">המשך</button>
+          </div>
+        </div>
+      </details>
+    </section>
+
+    <!-- Dashboard (Phase 2) -->
+    <section id="dashboard" hidden>
+      <div class="dash-toolbar">
+        <h2 id="dashTitle" class="dash-title"></h2>
+        <div class="month-picker">
+          <label for="monthSelect">חודש</label>
+          <select id="monthSelect"></select>
+          <span id="partialBadge" class="tag-partial" hidden></span>
+        </div>
+      </div>
+
+      <div id="kpiGrid" class="kpi-grid"></div>
+
+      <section id="insightsCard" class="card">
+        <h3 class="card-title">תובנות עיקריות</h3>
+        <ul id="insights" class="insights"></ul>
+      </section>
+
+      <div class="chart-grid">
+        <section id="carrierCard" class="card chart-card">
+          <h3 class="card-title">הזמנות לפי מוביל</h3>
+          <p id="carrierSub" class="card-sub"></p>
+          <div class="chart-box"><canvas aria-label="גרף הזמנות לפי מוביל" role="img"></canvas></div>
+          <p class="chart-empty" hidden></p>
+        </section>
+        <section id="shipTypeCard" class="card chart-card">
+          <h3 class="card-title">הזמנות לפי סוג משלוח</h3>
+          <p class="card-sub">משלוח עד הבית מול לוקר</p>
+          <div class="chart-box"><canvas aria-label="גרף הזמנות לפי סוג משלוח" role="img"></canvas></div>
+          <p class="chart-empty" hidden></p>
+        </section>
+        <section id="clientsCard" class="card chart-card">
+          <h3 class="card-title">5 הלקוחות המובילים</h3>
+          <p id="clientsSub" class="card-sub"></p>
+          <div class="chart-box"><canvas aria-label="גרף 5 הלקוחות המובילים" role="img"></canvas></div>
+          <p class="chart-empty" hidden></p>
+        </section>
+        <section id="dailyCard" class="card chart-card">
+          <h3 class="card-title">נפח הזמנות יומי</h3>
+          <p id="dailySub" class="card-sub"></p>
+          <div class="chart-box"><canvas aria-label="גרף נפח הזמנות יומי" role="img"></canvas></div>
+          <p class="chart-empty" hidden></p>
+        </section>
+      </div>
+
+      <section id="exceptionsCard" class="card">
+        <h3 class="card-title">חריגות — הזמנות שלא נמסרו</h3>
+        <p id="excSub" class="card-sub"></p>
+        <p id="excEmpty" class="exc-empty" hidden>אין חריגות 🎉</p>
+        <div class="table-wrap">
+          <table class="table" id="excTable">
+            <thead><tr><th>סטטוס</th><th>מוביל</th><th>הזמנות</th><th>% מהחריגות</th></tr></thead>
+            <tbody></tbody>
+            <tfoot></tfoot>
+          </table>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <footer class="app-footer container">
+    <span>הנתונים מעובדים בדפדפן בלבד · ללא שרת · ללא שמירה</span>
+  </footer>
+</body>
+</html>
